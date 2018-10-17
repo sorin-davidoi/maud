@@ -9,10 +9,16 @@
 
 #![doc(html_root_url = "https://docs.rs/maud/0.18.1")]
 
-#[cfg(feature = "streaming")] extern crate futures;
-#[cfg(feature = "actix-web")] extern crate actix_web;
-#[cfg(feature = "iron")] extern crate iron;
-#[cfg(feature = "rocket")] extern crate rocket;
+#[cfg(feature = "actix-web")]
+extern crate actix_web;
+#[cfg(feature = "streaming")]
+extern crate futures;
+#[cfg(feature = "hyper")]
+extern crate hyper;
+#[cfg(feature = "iron")]
+extern crate iron;
+#[cfg(feature = "rocket")]
+extern crate rocket;
 
 extern crate maud_htmlescape;
 extern crate maud_macros;
@@ -103,16 +109,22 @@ impl Render for str {
 
 #[cfg(feature = "streaming")]
 pub trait FutureRender {
-    fn render_to(&self, stream: &mut futures::stream::FuturesOrdered<
-        Box<futures::Future<Item = Markup, Error = Markup> + Send>
-    >);
+    fn render_to(
+        &mut self,
+        stream: &mut futures::stream::FuturesOrdered<
+            Box<futures::Future<Item = Markup, Error = Markup> + Send>,
+        >,
+    );
 }
 
 #[cfg(feature = "streaming")]
 impl FutureRender for String {
-    fn render_to(&self, stream: &mut futures::stream::FuturesOrdered<
-        Box<futures::Future<Item = Markup, Error = Markup> + Send>
-    >) {
+    fn render_to(
+        &mut self,
+        stream: &mut futures::stream::FuturesOrdered<
+            Box<futures::Future<Item = Markup, Error = Markup> + Send>,
+        >,
+    ) {
         let mut escaped = String::with_capacity(self.len());
         let _ = Escaper::new(&mut escaped).write_str(self);
         stream.push(Box::new(futures::future::ok(PreEscaped(escaped))));
@@ -121,14 +133,48 @@ impl FutureRender for String {
 
 #[cfg(feature = "streaming")]
 impl FutureRender for str {
-    fn render_to(&self, stream: &mut futures::stream::FuturesOrdered<
-        Box<futures::Future<Item = Markup, Error = Markup> + Send>
-    >) {
+    fn render_to(
+        &mut self,
+        stream: &mut futures::stream::FuturesOrdered<
+            Box<futures::Future<Item = Markup, Error = Markup> + Send>,
+        >,
+    ) {
         let mut escaped = String::with_capacity(self.len());
         let _ = Escaper::new(&mut escaped).write_str(self);
         stream.push(Box::new(futures::future::ok(PreEscaped(escaped))));
     }
 }
+
+#[cfg(feature = "streaming")]
+impl<'a> FutureRender for &'a str {
+    fn render_to(
+        &mut self,
+        stream: &mut futures::stream::FuturesOrdered<
+            Box<futures::Future<Item = Markup, Error = Markup> + Send>,
+        >,
+    ) {
+        let mut escaped = String::with_capacity(self.len());
+        let _ = Escaper::new(&mut escaped).write_str(self);
+        stream.push(Box::new(futures::future::ok(PreEscaped(escaped))));
+    }
+}
+
+// #[cfg(feature = "streaming")]
+// impl<X: futures::Future<Item = Markup, Error = Markup> + Send + ?Sized> FutureRender for X {
+//     fn render_to(
+//         &mut self,
+//         stream: &mut futures::stream::FuturesOrdered<
+//             Box<futures::Future<Item = Markup, Error = Markup> + Send>,
+//         >,
+//     ) {
+//         // unimplemented!()
+//         // let mut escaped = String::with_capacity(self.len());
+//         // let _ = Escaper::new(&mut escaped).write_str(self);
+//         stream.push(Box::new(
+//             *(&self as &(futures::Future<Item = Markup, Error = Markup> + Send)),
+//         ));
+//     }
+// }
 
 /// A wrapper that renders the inner value without escaping.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,9 +187,12 @@ impl<T: AsRef<str>> Render for PreEscaped<T> {
 }
 
 impl<T: AsRef<str>> FutureRender for PreEscaped<T> {
-    fn render_to(&self, stream: &mut futures::stream::FuturesOrdered<
-        Box<futures::Future<Item = Markup, Error = Markup> + Send>
-    >) {
+    fn render_to(
+        &mut self,
+        stream: &mut futures::stream::FuturesOrdered<
+            Box<futures::Future<Item = Markup, Error = Markup> + Send>,
+        >,
+    ) {
         let mut escaped = String::with_capacity(self.0.as_ref().len());
         let _ = Escaper::new(&mut escaped).write_str(self.0.as_ref());
         stream.push(Box::new(futures::future::ok(PreEscaped(escaped))));
@@ -197,11 +246,11 @@ pub const DOCTYPE: PreEscaped<&'static str> = PreEscaped("<!DOCTYPE html>");
 
 #[cfg(feature = "iron")]
 mod iron_support {
-    use std::io;
     use iron::headers::ContentType;
     use iron::modifier::{Modifier, Set};
     use iron::modifiers::Header;
     use iron::response::{Response, WriteBody};
+    use std::io;
     use PreEscaped;
 
     impl Modifier<Response> for PreEscaped<String> {
@@ -239,8 +288,8 @@ mod rocket_support {
 
 #[cfg(feature = "actix-web")]
 mod actix_support {
+    use actix_web::{Error, HttpRequest, HttpResponse, Responder};
     use PreEscaped;
-    use actix_web::{Responder, HttpResponse, HttpRequest, Error};
 
     impl Responder for PreEscaped<String> {
         type Item = HttpResponse;
@@ -249,4 +298,59 @@ mod actix_support {
             Ok(HttpResponse::Ok().body(self.0))
         }
     }
+}
+
+#[cfg(feature = "hyper")]
+mod hyper_support {
+    use futures::Async;
+    use hyper::body::Payload;
+    use hyper::{Chunk, Error};
+    use PreEscaped;
+
+    impl Payload for PreEscaped<String> {
+        type Data = Chunk;
+        type Error = Error;
+        fn poll_data(&mut self) -> Result<Async<Option<Self::Data>>, Self::Error> {
+            match self.0.len() {
+                0 => Ok(Async::Ready(None)),
+                _ => {
+                    let clone = self.0.clone();
+                    self.0.clear();
+                    Ok(Async::Ready(Some(Chunk::from(clone))))
+                }
+            }
+        }
+    }
+
+    impl From<PreEscaped<String>> for Chunk {
+        fn from(markup: PreEscaped<String>) -> Chunk {
+            Chunk::from(markup.into_string())
+        }
+    }
+
+    // impl std::fmt::Display for PreEscaped<String> {
+    //     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+    //         unimplemented!()
+    //     }
+    // }
+
+    // impl std::error::Error for PreEscaped<String> {
+    //     fn description(&self) -> &str {
+    //         "dsadsa"
+    //     }
+
+    //     fn detail(&self) -> Option<String> {
+    //         None
+    //     }
+
+    //     fn cause(&self) -> Option<&std::error::Error> {
+    //         None
+    //     }
+    // }
+
+    // impl From<PreEscaped<String>> for std::error::Error {
+    //     fn from(markup: PreEscaped<String>) -> std::error::Error {
+    //         unimplemented!()
+    //     }
+    // }
 }

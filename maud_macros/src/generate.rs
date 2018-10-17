@@ -1,14 +1,5 @@
 use maud_htmlescape::Escaper;
-use proc_macro::{
-    Delimiter,
-    Group,
-    Literal,
-    quote,
-    Span,
-    Ident,
-    TokenStream,
-    TokenTree,
-};
+use proc_macro::{quote, Delimiter, Group, Ident, Literal, Span, TokenStream, TokenTree};
 
 use ast::*;
 
@@ -30,17 +21,14 @@ trait GeneratorTrait<T: BuilderTrait> {
     fn splice(&self, expr: TokenStream) -> TokenStream;
 
     fn name(&self, name: TokenStream, build: &mut T) {
-        let string = name.into_iter().map(|token| token.to_string()).collect::<String>();
+        let string = name
+            .into_iter()
+            .map(|token| token.to_string())
+            .collect::<String>();
         build.push_escaped(&string);
     }
 
-    fn element(
-        &self,
-        name: TokenStream,
-        attrs: Attrs,
-        body: ElementBody,
-        build: &mut T,
-    ) {
+    fn element(&self, name: TokenStream, attrs: Attrs, body: ElementBody, build: &mut T) {
         build.push_str("<");
         self.name(name.clone(), build);
         self.attrs(attrs, build);
@@ -62,12 +50,14 @@ trait GeneratorTrait<T: BuilderTrait> {
                     build.push_str("=\"");
                     self.markup(value, build);
                     build.push_str("\"");
-                },
+                }
                 AttrType::Empty { toggler: None } => {
                     build.push_str(" ");
                     self.name(name, build);
-                },
-                AttrType::Empty { toggler: Some(toggler) } => {
+                }
+                AttrType::Empty {
+                    toggler: Some(toggler),
+                } => {
                     let head = desugar_toggler(toggler);
                     build.push_tokens({
                         let mut build = self.builder();
@@ -76,7 +66,7 @@ trait GeneratorTrait<T: BuilderTrait> {
                         let body = build.finish();
                         quote!($head { $body })
                     })
-                },
+                }
             }
         }
     }
@@ -89,13 +79,22 @@ trait GeneratorTrait<T: BuilderTrait> {
 
     fn markup(&self, markup: Markup, build: &mut T) {
         match markup {
-            Markup::Block(Block { markups, outer_span }) => {
-                if markups.iter().any(|markup| matches!(*markup, Markup::Let { .. })) {
-                    build.push_tokens(self.block(Block { markups, outer_span }));
+            Markup::Block(Block {
+                markups,
+                outer_span,
+            }) => {
+                if markups
+                    .iter()
+                    .any(|markup| matches!(*markup, Markup::Let { .. }))
+                {
+                    build.push_tokens(self.block(Block {
+                        markups,
+                        outer_span,
+                    }));
                 } else {
                     self.markups(markups, build);
                 }
-            },
+            }
             Markup::Literal { content, .. } => build.push_escaped(&content),
             Markup::Symbol { symbol } => self.name(symbol, build),
             Markup::Splice { expr, .. } => build.push_tokens(self.splice(expr)),
@@ -105,18 +104,20 @@ trait GeneratorTrait<T: BuilderTrait> {
                 for segment in segments {
                     build.push_tokens(self.special(segment));
                 }
-            },
-            Markup::Match { head, arms, arms_span, .. } => {
+            }
+            Markup::Match {
+                head,
+                arms,
+                arms_span,
+                ..
+            } => {
                 build.push_tokens({
-                    let body = arms
-                        .into_iter()
-                        .map(|arm| self.match_arm(arm))
-                        .collect();
+                    let body = arms.into_iter().map(|arm| self.match_arm(arm)).collect();
                     let mut body = TokenTree::Group(Group::new(Delimiter::Brace, body));
                     body.set_span(arms_span);
                     quote!($head $body)
                 });
-            },
+            }
         }
     }
 
@@ -155,7 +156,7 @@ impl GeneratorTrait<Builder> for Generator {
         quote!({
             // Create a local trait alias so that autoref works
             trait Render: maud::Render {
-                fn __maud_render_to(&self, output_ident: &mut String) {
+                fn __maud_render_to(self, output_ident: &mut String) {
                     maud::Render::render_to(self, output_ident);
                 }
             }
@@ -188,14 +189,14 @@ impl GeneratorTrait<StreamBuilder> for StreamGenerator {
             // $output_ident.push($expr);
             // Create a local trait alias so that autoref works
             trait FutureRender: maud::FutureRender {
-                fn __maud_render_to(&self, output_ident: &mut futures::stream::FuturesOrdered<
+                fn __maud_render_to(self, output_ident: &mut futures::stream::FuturesOrdered<
                     Box<futures::Future<Item = maud::Markup, Error = maud::Markup> + Send>
                 >) {
                     maud::FutureRender::render_to(self, output_ident);
                 }
             }
             impl<T: maud::FutureRender> FutureRender for T {}
-            $expr.to_string().__maud_render_to(&mut $output_ident);
+            $expr.__maud_render_to(&mut $output_ident);
         })
     }
 }
@@ -222,7 +223,7 @@ fn desugar_attrs(attrs: Attrs) -> Vec<Attribute> {
                 } else {
                     classes_static.push(name);
                 }
-            },
+            }
             Attr::Id { name, .. } => ids.push(name),
             Attr::Attribute { attribute } => attributes.push(attribute),
         }
@@ -252,7 +253,11 @@ fn desugar_classes_or_ids(
         };
         let head = desugar_toggler(toggler);
         markups.push(Markup::Special {
-            segments: vec![Special { at_span: Span::call_site(), head, body }],
+            segments: vec![Special {
+                at_span: Span::call_site(),
+                head,
+                body,
+            }],
         });
     }
     Some(Attribute {
@@ -279,7 +284,12 @@ fn prepend_leading_space(name: Markup, leading_space: &mut bool) -> Vec<Markup> 
     markups
 }
 
-fn desugar_toggler(Toggler { mut cond, cond_span }: Toggler) -> TokenStream {
+fn desugar_toggler(
+    Toggler {
+        mut cond,
+        cond_span,
+    }: Toggler
+) -> TokenStream {
     // If the expression contains an opening brace `{`,
     // wrap it in parentheses to avoid parse errors
     if cond.clone().into_iter().any(|token| match token {
@@ -299,7 +309,7 @@ trait BuilderTrait {
     fn new(output_ident: TokenTree) -> Self;
     fn push_str(&mut self, string: &str);
     fn push_escaped(&mut self, string: &str);
-    fn push_tokens<T: IntoIterator<Item=TokenTree>>(&mut self, tokens: T);
+    fn push_tokens<T: IntoIterator<Item = TokenTree>>(&mut self, tokens: T);
     fn cut(&mut self);
     fn finish(self) -> TokenStream;
 }
@@ -328,7 +338,7 @@ impl BuilderTrait for Builder {
         Escaper::new(&mut self.tail).write_str(string).unwrap();
     }
 
-    fn push_tokens<T: IntoIterator<Item=TokenTree>>(&mut self, tokens: T) {
+    fn push_tokens<T: IntoIterator<Item = TokenTree>>(&mut self, tokens: T) {
         self.cut();
         self.tokens.extend(tokens);
     }
@@ -378,7 +388,7 @@ impl BuilderTrait for StreamBuilder {
         Escaper::new(&mut self.tail).write_str(string).unwrap();
     }
 
-    fn push_tokens<T: IntoIterator<Item=TokenTree>>(&mut self, tokens: T) {
+    fn push_tokens<T: IntoIterator<Item = TokenTree>>(&mut self, tokens: T) {
         self.cut();
         self.tokens.extend(tokens);
     }
@@ -388,8 +398,8 @@ impl BuilderTrait for StreamBuilder {
             return;
         }
         let push_str_expr = {
-            let output_ident = self.output_ident.clone();
-            let string = TokenTree::Literal(Literal::string(&self.tail));
+            let mut output_ident = self.output_ident.clone();
+            let mut string = TokenTree::Literal(Literal::string(&self.tail));
             quote!($output_ident.push(Box::new(futures::future::ok(maud::PreEscaped($string.into()))));)
         };
         self.tail.clear();
